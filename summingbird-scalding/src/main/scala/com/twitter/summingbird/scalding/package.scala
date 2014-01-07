@@ -54,7 +54,9 @@ package object scalding {
   type PlannerOutput[+T] = StateWithError[FactoryInput, List[FailureReason], T]
   /** We are usually producing Pipes in the Planner */
   type PipeFactory[+T] = PlannerOutput[FlowToPipe[T]]
-
+ /* comment by manuzhang that fully expands the definition of PipeFactory above */
+ // type PipeFactory[+T] = StateWithError[(Interval[Time], Mode), List[FailureReason], Reader[(FlowDef, Mode), TypedPipe[(Time, T)]]]
+  
   // Helps interop with scalding:
   implicit def modeFromTuple(implicit fm: (FlowDef, Mode)): Mode = fm._2
   implicit def flowDefFromTuple(implicit fm: (FlowDef, Mode)): FlowDef = fm._1

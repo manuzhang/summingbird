@@ -22,7 +22,7 @@ import com.twitter.algebird.{ Monoid, Semigroup }
 object Producer {
 
   /** return this and the recursively reachable nodes in depth first, left first order
-   * Differs from transitiveDependencies in that this goes up both sides of an either
+   * Differs from transitiveDependencies in that this goes up both sides of an `also`
    * and it returns the input node.
    */
   def entireGraphOf[P <: Platform[P]](p: Producer[P, Any]): List[Producer[P, Any]] = {
@@ -60,7 +60,7 @@ object Producer {
      * I work around with the cast.
      */
     p match {
-      case AlsoProducer(_, prod) => List(prod)
+      case AlsoProducer(_, producer) => List(producer)
       case NamedProducer(producer, _) => List(producer)
       case IdentityKeyedProducer(producer) => List(producer)
       case Source(_) => List()
@@ -77,6 +77,7 @@ object Producer {
    * Return all dependencies of a given node in depth first, left first order.
    */
   def transitiveDependenciesOf[P <: Platform[P]](p: Producer[P, Any]): List[Producer[P, Any]] = {
+    /* partially applied functions */
     val nfn = dependenciesOf[P](_)
     graph.depthFirstOf(p)(nfn).toList
   }
@@ -95,6 +96,7 @@ sealed trait Producer[P <: Platform[P], +T] {
    */
   def also[R](that: Producer[P, R]): Producer[P, R] = AlsoProducer(this, that)
   def name(id: String): Producer[P, T] = NamedProducer(this, id)
+  /* lower bound */
   def merge[U >: T](r: Producer[P, U]): Producer[P, U] = MergedProducer(this, r)
 
   def collect[U](fn: PartialFunction[T,U]): Producer[P, U] =
@@ -141,7 +143,8 @@ case class OptionMappedProducer[P <: Platform[P], T, U](producer: Producer[P, T]
 case class FlatMappedProducer[P <: Platform[P], T, U](producer: Producer[P, T], fn: T => TraversableOnce[U])
     extends Producer[P, U]
 
-case class MergedProducer[P <: Platform[P], T](left: Producer[P, T], right: Producer[P, T]) extends Producer[P, T]
+/* changed by manuzhang to conform to the type of merge function */
+case class MergedProducer[P <: Platform[P], U](left: Producer[P, U], right: Producer[P, U]) extends Producer[P, U]
 
 case class WrittenProducer[P <: Platform[P], T, U >: T](producer: Producer[P, T], sink: P#Sink[U]) extends Producer[P, T]
 
@@ -150,6 +153,7 @@ case class Summer[P <: Platform[P], K, V](
   store: P#Store[K, V],
   monoid: Monoid[V]) extends KeyedProducer[P, K, V]
 
+/* mixin */
 sealed trait KeyedProducer[P <: Platform[P], K, V] extends Producer[P, (K, V)] {
   def leftJoin[RightV](service: P#Service[K, RightV]): KeyedProducer[P, K, (V, Option[RightV])] =
     LeftJoinedProducer(this, service)

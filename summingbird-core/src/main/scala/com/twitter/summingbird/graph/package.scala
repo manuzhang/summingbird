@@ -24,11 +24,13 @@ package object graph {
    * NOT INCLUDING INPUT, unless it can be reached via neighbors */
   def depthFirstOf[T](t: T)(nf: NeighborFn[T]): IndexedSeq[T] = {
     @annotation.tailrec
+    /* acc are those already added */
     def loop(stack: List[T], deps: Vector[T], acc: Set[T]): (Vector[T], Set[T]) = {
       stack match {
         case Nil => (deps, acc)
         case h::tail =>
           val newStack = nf(h).filterNot(acc).foldLeft(tail) { (s, it) => it :: s }
+          /* not strictly depth first since the direct children are added first */
           val newDeps = if(acc(h)) deps else (deps :+ h)
           loop(newStack, newDeps, acc + h)
       }

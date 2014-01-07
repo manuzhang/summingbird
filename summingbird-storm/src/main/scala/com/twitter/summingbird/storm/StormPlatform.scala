@@ -68,6 +68,7 @@ object Storm {
   def store[K, V](store: => MergeableStore[(K, BatchID), V])(implicit batcher: Batcher): MergeableStoreSupplier[K, V] =
     MergeableStoreSupplier.from(store)
 
+  // Spout => Source
   implicit def source[T: TimeExtractor: Manifest](spout: Spout[T]) =
     Producer.source[Storm, T](timedSpout(spout))
 }
@@ -207,6 +208,7 @@ abstract class Storm(options: Map[String, Options], updateConf: Config => Config
 
             val spoutName = "spout-" + suffixOf(operations, suffix)
 
+            // multiple OptionMappedProducers (fanOut == 1) could be mapped to a single Spout
             val stormSpout = optionMaps.foldLeft(spout.asInstanceOf[Spout[(Long, Any)]]) {
               case (spout, OptionMap(op)) =>
                 spout.flatMap { case (time, t) =>

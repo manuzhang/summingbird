@@ -25,6 +25,8 @@ package com.twitter.summingbird
 [error] undetermined type
 
   */
+
+// case class adds an implicit factory method 
 case class Unzip2[P1 <: Platform[P1], P2 <: Platform[P2]]() {
 
   private def cast[T](p: Any): (Producer[P1, T], Producer[P2, T]) =

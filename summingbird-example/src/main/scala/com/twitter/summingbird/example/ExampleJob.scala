@@ -22,6 +22,7 @@ import com.twitter.summingbird.storm.{ MergeableStoreSupplier, Storm }
 import twitter4j.Status
 import twitter4j.TwitterStreamFactory
 import twitter4j.conf.ConfigurationBuilder
+import com.twitter.summingbird.TimeExtractor
 
 object StatusStreamer {
   /**

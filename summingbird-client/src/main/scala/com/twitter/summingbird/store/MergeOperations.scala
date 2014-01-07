@@ -53,9 +53,16 @@ object MergeOperations {
       k -> v.map(sortedSum(_))
     }
 
-  def dropBatches[K, V](m: Map[K, Future[Option[(BatchID, V)]]]): Map[K, Future[Option[V]]] =
+  /* comment by manuzhang to better understand "Case sequences as partial functions" */
+  def dropBatches[K, V](m: Map[K, Future[Option[(BatchID, V)]]]): Map[K, Future[Option[V]]] = {
+   /* val f: ((K, Future[Option[(BatchID, V)]])) => (K, Future[Option[V]]) = {
+      case (k, v) => k -> v.map(_.map(_._2))
+    }
+    m.map(f) */
     m.map { case (k, v) => k -> v.map(_.map(_._2)) }
 
+  }
+  
   /**
    * Pivots each BatchID out of the key and into the Value's future.
    */
@@ -73,7 +80,7 @@ object MergeOperations {
 
   /**
     * Selects the most recent BatchID between the offlineStore and the BatchID calculated
-    * with batchesToKeep. The more recent BatchID is used as the begining of the 
+    * with batchesToKeep. The more recent BatchID is used as the beginning of the 
     * range used to query the onlineStore.
     */
   def expand(offlineReturn: Option[BatchID], nowBatch: BatchID, batchesToKeep: Int): Iterable[BatchID] = {
@@ -84,11 +91,19 @@ object MergeOperations {
     BatchID.range(initBatch, nowBatch)
   }
 
+  /* comment by manuzhang to illustrate the parameter lookup in the following function 
+   * offlineResult.andThen(_.map { _.map { _._1 } }) composes a PartialFunction[K, FOpt[BatchID]] 
+   * what lookup does below is literally
+   * f(Map.apply(k)) where f is the parameter of andThen 
+   * Note that Map.apply gets value from key
+   * */
+
   def generateOnlineKeys[K](ks: Seq[K], nowBatch: BatchID, batchesToKeep: Int)
     (lookup: K => FOpt[BatchID])(implicit collect: FutureCollector[(K, Iterable[BatchID])])
       : Future[Set[(K, BatchID)]] =
     for {
       collected <- collect(
+       // ks.map { k => lookup(k).map { x => (k,expand(x, nowBatch, batchesToKeep)) } }
         ks.map { k => lookup(k).map { k -> expand(_, nowBatch, batchesToKeep) } }
       )
     } yield pivot.invert(collected.toMap).toSet

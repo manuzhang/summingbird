@@ -49,6 +49,7 @@ trait FlatMapOperation[-T, +U] extends Serializable with Closeable {
 
 class FunctionFlatMapOperation[T, U](@transient fm: T => TraversableOnce[U])
     extends FlatMapOperation[T, U] {
+  // java serialization using kryo internally
   val boxed = MeatLocker(fm)
   def apply(t: T) = Future.value(boxed.get(t))
 }
