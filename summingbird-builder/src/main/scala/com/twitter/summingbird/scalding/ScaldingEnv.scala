@@ -16,21 +16,17 @@ limitations under the License.
 
 package com.twitter.summingbird.scalding
 
-import com.twitter.bijection.Conversion.asMethod
-import com.twitter.scalding.{ Tool => STool, _ }
+import com.twitter.scalding.{Args, Hdfs, RichDate, DateParser}
 import com.twitter.summingbird.scalding.store.HDFSMetadata
-import com.twitter.summingbird.{ Env, Unzip2, Summer, Producer, AbstractJob }
-import com.twitter.summingbird.batch.{ BatchID, Batcher }
+import com.twitter.summingbird.{ Env, Summer, TailProducer, AbstractJob }
+import com.twitter.summingbird.batch.{ BatchID, Batcher, Timestamp }
 import com.twitter.summingbird.builder.{ SourceBuilder, Reducers, CompletedBuilder }
-import com.twitter.summingbird.storm.Storm
-import com.twitter.summingbird.kryo.KryoRegistrationHelper
-import com.twitter.summingbird.scalding.store.VersionedState
-import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.util.ToolRunner
-import org.apache.hadoop.util.GenericOptionsParser
-import java.util.{ Date, HashMap => JHashMap, Map => JMap, TimeZone }
+import scala.collection.JavaConverters._
 
-import ConfigBijection._
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.util.GenericOptionsParser
+import java.util.TimeZone
+
 
 /**
  * @author Oscar Boykin
@@ -68,9 +64,9 @@ case class ScaldingEnv(override val jobName: String, inargs: Array[String])
   // initial batch to process. All runs after the first batch
   // (incremental updates) will use the batch of the previous run as
   // the starting batch, rendering this unnecessary.
-  def startDate: Option[Date] =
+  def startDate: Option[Timestamp] =
     args.optional("start-time")
-      .map(DateOps.stringToRichDate(_)(tz).value)
+      .map(RichDate(_)(tz, DateParser.default).value)
 
   def initialBatch(b: Batcher): Option[BatchID] = startDate.map(b.batchOf(_))
 
@@ -84,74 +80,84 @@ case class ScaldingEnv(override val jobName: String, inargs: Array[String])
   // Summingbird job.
   def reducers : Int = args.getOrElse("reducers","20").toInt
 
-  def run {
-    // Calling abstractJob's constructor and binding it to a variable
-    // forces any side effects caused by that constructor (building up
-    // of the environment and defining the builder).
-    val ajob = abstractJob
-    val scaldingBuilder = builder.asInstanceOf[CompletedBuilder[Scalding, _, _]]
-    val updater = { conf : Configuration =>
-      // Parse the Hadoop args.
-      // TODO rethink this: https://github.com/twitter/summingbird/issues/136
-      // I think we shouldn't pretend Configuration is immutable.
-      new GenericOptionsParser(conf, inargs)
-      val codecPairs = Seq(builder.keyCodecPair, builder.valueCodecPair)
-      val eventCodecPairs = builder.eventCodecPairs
-
-      // TODO: replace with chill.config
-      val jConf: JMap[String,AnyRef] = new JHashMap(fromJavaMap.invert(conf))
-      KryoRegistrationHelper.registerInjections(jConf, eventCodecPairs)
-
-      // Register key and value types. All extensions of either of these
-      // types will be caught by the registered injection.
-      KryoRegistrationHelper.registerInjectionDefaults(jConf, codecPairs)
-      fromMap(ajob.transformConfig(jConf.as[Map[String, AnyRef]]))
-    }
-    val jobName =
-      args.optional("name")
-        .getOrElse(ajob.getClass.getName)
-    run(jobName, scaldingBuilder, updater)
-  }
-
   // Used to insert a write just before the store so the store
   // can be used as a Service
-  private def addDeltaWrite[K,V](snode: Summer[Scalding, K, V],
-    sink: ScaldingSink[(K,V)]): Summer[Scalding, K, V] = {
+  private def addDeltaWrite(snode: Summer[Scalding, Any, Any],
+    sink: ScaldingSink[(Any, Any)]): Summer[Scalding, Any, Any] = {
     val Summer(prod, store, monoid) = snode
     Summer(prod.write(sink), store, monoid)
   }
 
-  def run[K,V](name: String,
-    scaldingBuilder: CompletedBuilder[Scalding, K, V],
-    confud: Configuration => Configuration) {
+  case class Built(platform: Scalding,
+    toRun: TailProducer[Scalding, (Any, (Option[Any], Any))],
+    stateFn: (Configuration) => VersionedState)
+
+  lazy val build: Built = {
+    // Calling abstractJob's constructor and binding it to a variable
+    // forces any side effects caused by that constructor (building up
+    // of the environment and defining the builder).
+    val ajob = abstractJob
+    val scaldingBuilder = builder.asInstanceOf[CompletedBuilder[Scalding, Any, Any]]
+    val name = args.optional("name").getOrElse(ajob.getClass.getName)
+
     // Perform config transformations before Hadoop job submission
     val opts = SourceBuilder.adjust(
       scaldingBuilder.opts, scaldingBuilder.id)(_.set(Reducers(reducers)))
+
     // Support for the old setting based writing
-    val toRun: Producer[Scalding, (K, V)] =
+    val toRun: TailProducer[Scalding, (Any, (Option[Any], Any))] =
       (for {
         opt <- opts.get(scaldingBuilder.id)
-        stid <- opt.get[StoreIntermediateData[K,V]]
+        stid <- opt.get[StoreIntermediateData[Any, Any]]
       } yield addDeltaWrite(scaldingBuilder.node, stid.sink))
         .getOrElse(scaldingBuilder.node)
         .name(scaldingBuilder.id)
 
-    def getStatePath[K1,V1](ss: ScaldingStore[K1, V1]): Option[String] =
+    val scald = Scalding(name, opts)
+        .withRegistrars(ajob.registrars ++ builder.registrar.getRegistrars.asScala)
+        .withConfigUpdater {
+          // Set these before the user settings, so that the user
+          // can change them if needed
+
+          // Make sure we use block compression from mappers to reducers
+          _.put("mapred.output.compression.type", "BLOCK")
+            .put("io.compression.codec.lzo.compression.level", "3")
+            .put("mapred.output.compress", "true")
+            .put("mapred.compress.map.output", "true")
+        }
+        .withConfigUpdater{ c =>
+          c.updated(ajob.transformConfig(c.toMap))
+        }
+
+    def getStatePath(ss: ScaldingStore[_, _]): Option[String] =
       ss match {
         case store: VersionedBatchStore[_, _, _, _] => Some(store.rootPath)
         case initstore: InitialBatchedStore[_, _] => getStatePath(initstore.proxy)
         case _ => None
       }
-    // Fail as soon as possible if this is not a valid store:
-    val statePath = getStatePath(scaldingBuilder.node.store).getOrElse {
-      sys.error("You must use a VersionedBatchStore with the old Summingbird API!")
-    }
-    val conf = confud(new Configuration)
     // VersionedState needs this
     implicit val batcher = scaldingBuilder.batcher
-    val state = VersionedState(HDFSMetadata(conf, statePath), startDate, batches)
+    val stateFn = { (conf: Configuration) =>
+      val statePath = getStatePath(scaldingBuilder.node.store).getOrElse {
+        sys.error("You must use a VersionedBatchStore with the old Summingbird API!")
+      }
+      VersionedState(HDFSMetadata(conf, statePath), startDate, batches)
+    };
+
+    Built(scald, toRun, stateFn)
+  }
+
+  def run = run(build)
+
+  def run(b: Built) {
+    val Built(scald, toRun, stateFn) = b
+
+    val conf = new Configuration
+    // Add the generic options
+    new GenericOptionsParser(conf, inargs)
+
     try {
-      new Scalding(name, opts).run(state, Hdfs(true, conf), toRun)
+      scald.run(stateFn(conf), Hdfs(true, conf), toRun)
     }
     catch {
       case f@FlowPlanException(errs) =>

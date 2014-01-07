@@ -23,8 +23,8 @@ import cascading.flow.FlowDef
 import com.twitter.scalding.{Dsl, Mode, TDsl, TypedPipe, Hdfs => HdfsMode, TupleSetter}
 import com.twitter.scalding.commons.source.VersionedKeyValSource
 import com.twitter.algebird.monad.Reader
-import com.twitter.summingbird.batch.{BatchID, Batcher}
-import scala.util.control.Exception.allCatch
+import com.twitter.summingbird.batch.{BatchID, Batcher, Timestamp }
+import scala.util.{ Try => ScalaTry }
 
 /**
  * Scalding implementation of the batch read and write components of a
@@ -81,8 +81,8 @@ abstract class VersionedBatchStoreBase[K, V](val rootPath: String) extends Batch
     * upper bound. Put another way, all events that occured before the
     * version are included in this store.
     */
-  def batchIDToVersion(b: BatchID): Long = batcher.earliestTimeOf(b.next).getTime
-  def versionToBatchID(ver: Long): BatchID = batcher.batchOf(new java.util.Date(ver)).prev
+  def batchIDToVersion(b: BatchID): Long = batcher.earliestTimeOf(b.next).milliSinceEpoch
+  def versionToBatchID(ver: Long): BatchID = batcher.batchOf(Timestamp(ver)).prev
 
   protected def lastBatch(exclusiveUB: BatchID, mode: HdfsMode): Option[(BatchID, FlowProducer[TypedPipe[(K,V)]])] = {
     val meta = HDFSMetadata(mode.conf, rootPath)
@@ -111,7 +111,7 @@ abstract class VersionedBatchStoreBase[K, V](val rootPath: String) extends Batch
        */
       meta(ver)
         .get[String]
-        .flatMap { str => allCatch.opt(BatchID(str).prev) }
+        .flatMap { str => ScalaTry(BatchID(str).prev) }
         .map { oldbatch =>
           val newBatch = versionToBatchID(ver)
           if(newBatch > oldbatch) {
@@ -148,6 +148,11 @@ class VersionedBatchStore[K, V, K2, V2](rootPath: String, versionsToKeep: Int, o
   (unpack: ((K2, V2)) => (K, V))(
   implicit @transient injection: Injection[(K2, V2), (Array[Byte], Array[Byte])], override val ordering: Ordering[K])
     extends VersionedBatchStoreBase[K, V](rootPath) {
+
+  /** Make sure not to keep more than versionsToKeep when we write out.
+   * If this is out of sync with VersionedKeyValSource we can have issues
+   */
+  override def select(b: List[BatchID]): List[BatchID] = b.takeRight(versionsToKeep)
 
   /**
     * writeLast receives an INCLUSIVE upper bound on batchID and a
@@ -211,7 +216,7 @@ class VersionedBatchStore[K, V, K2, V2](rootPath: String, versionsToKeep: Int, o
     */
   protected def readVersion(v: Long): FlowProducer[TypedPipe[(K, V)]] = Reader { (flowMode: (FlowDef, Mode)) =>
     val mappable = VersionedKeyValSource[K2, V2](rootPath, sourceVersion=Some(v))
-    TypedPipe.from(mappable)(flowMode._1, flowMode._2, mappable.converter)
+    TypedPipe.from(mappable)(flowMode._1, flowMode._2)
       .map(unpack)
   }
 }

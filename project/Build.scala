@@ -2,7 +2,6 @@ package summingbird
 
 import sbt._
 import Keys._
-import sbtgitflow.ReleasePlugin._
 import com.typesafe.tools.mima.plugin.MimaPlugin.mimaDefaultSettings
 import com.typesafe.tools.mima.plugin.MimaKeys.previousArtifact
 
@@ -14,15 +13,25 @@ object SummingbirdBuild extends Build {
       case x => x
     }
 
-  val sharedSettings = Project.defaultSettings ++ releaseSettings ++ Seq(
+  def specs2Import(scalaVersion: String) = scalaVersion match {
+      case version if version startsWith "2.9" => "org.specs2" %% "specs2" % "1.12.4.1" % "test"
+      case version if version startsWith "2.10" => "org.specs2" %% "specs2" % "1.13" % "test"
+  }
+
+  val sharedSettings = Project.defaultSettings ++ Seq(
     organization := "com.twitter",
-    version := "0.1.5",
+    version := "0.3.1",
     scalaVersion := "2.9.3",
     crossScalaVersions := Seq("2.9.3", "2.10.0"),
     libraryDependencies ++= Seq(
+      "org.slf4j" % "slf4j-api" % slf4jVersion,
       "org.scalacheck" %% "scalacheck" % "1.10.0" % "test",
-      "org.scala-tools.testing" %% "specs" % "1.6.9" % "test"
+      // These satisify's scaldings log4j needs when in test mode
+      "log4j" % "log4j" % "1.2.16" % "test",
+      "org.slf4j" % "slf4j-log4j12" % slf4jVersion % "test"
     ),
+
+    libraryDependencies <+= scalaVersion(specs2Import(_)),
 
     resolvers ++= Seq(
       Opts.resolver.sonatypeSnapshots,
@@ -32,7 +41,7 @@ object SummingbirdBuild extends Build {
       "Twitter Maven" at "http://maven.twttr.com"
     ),
 
-    parallelExecution in Test := false, // until scalding 0.9.0 we can't do this
+    parallelExecution in Test := true,
 
     scalacOptions ++= Seq(
       "-unchecked",
@@ -53,6 +62,7 @@ object SummingbirdBuild extends Build {
           Opts.resolver.sonatypeSnapshots
         else
           Opts.resolver.sonatypeStaging
+          //"twttr" at "http://artifactory.local.twitter.com/libs-releases-local"
       )
     },
 
@@ -100,33 +110,36 @@ object SummingbirdBuild extends Build {
   ).aggregate(
     summingbirdCore,
     summingbirdBatch,
+    summingbirdOnline,
     summingbirdClient,
-    summingbirdKryo,
     summingbirdStorm,
     summingbirdScalding,
     summingbirdBuilder,
+    summingbirdChill,
     summingbirdExample
   )
 
   val dfsDatastoresVersion = "1.3.4"
-  val bijectionVersion = "0.4.0"
-  val algebirdVersion = "0.2.0"
-  val scaldingVersion = "0.8.11"
-  val storehausVersion = "0.4.0"
-  val utilVersion = "6.3.0"
-  val chillVersion = "0.2.3"
-  val tormentaVersion = "0.5.1"
+  val bijectionVersion = "0.6.0"
+  val algebirdVersion = "0.3.1"
+  val scaldingVersion = "0.9.0rc4"
+  val storehausVersion = "0.8.0"
+  val utilVersion = "6.3.8"
+  val chillVersion = "0.3.3"
+  val tormentaVersion = "0.6.0"
+
+  lazy val slf4jVersion = "1.6.6"
 
   /**
     * This returns the youngest jar we released that is compatible with
     * the current.
     */
-  val unreleasedModules = Set[String]("example")
+  val unreleasedModules = Set[String]()
 
   def youngestForwardCompatible(subProj: String) =
     Some(subProj)
       .filterNot(unreleasedModules.contains(_))
-      .map { s => "com.twitter" % ("summingbird-" + s + "_2.9.2") % "0.0.5" }
+      .map { s => "com.twitter" % ("summingbird-" + s + "_2.9.3") % "0.2.4" }
 
   def module(name: String) = {
     val id = "summingbird-%s".format(name)
@@ -139,17 +152,27 @@ object SummingbirdBuild extends Build {
   lazy val summingbirdBatch = module("batch").settings(
     libraryDependencies ++= Seq(
       "com.twitter" %% "algebird-core" % algebirdVersion,
-      withCross("com.twitter" %% "bijection-core" % bijectionVersion)
+      "com.twitter" %% "bijection-core" % bijectionVersion
     )
+  )
+
+  lazy val summingbirdChill = module("chill").settings(
+    libraryDependencies ++= Seq(
+      "com.twitter" %% "chill" % chillVersion,
+      "com.twitter" %% "chill-bijection" % chillVersion
+    )
+  ).dependsOn(
+      summingbirdCore,
+      summingbirdBatch
   )
 
   lazy val summingbirdClient = module("client").settings(
     libraryDependencies ++= Seq(
       "com.twitter" %% "algebird-core" % algebirdVersion,
       "com.twitter" %% "algebird-util" % algebirdVersion,
-      withCross("com.twitter" %% "bijection-core" % bijectionVersion),
-      withCross("com.twitter" %% "storehaus-core" % storehausVersion),
-      withCross("com.twitter" %% "storehaus-algebra" % storehausVersion)
+      "com.twitter" %% "bijection-core" % bijectionVersion,
+      "com.twitter" %% "storehaus-core" % storehausVersion,
+      "com.twitter" %% "storehaus-algebra" % storehausVersion
     )
   ).dependsOn(summingbirdBatch)
 
@@ -157,29 +180,40 @@ object SummingbirdBuild extends Build {
     libraryDependencies += "com.twitter" %% "algebird-core" % algebirdVersion
   )
 
-  lazy val summingbirdKryo = module("kryo").settings(
+  lazy val summingbirdOnline = module("online").settings(
     libraryDependencies ++= Seq(
-      withCross("com.twitter" %% "bijection-core" % bijectionVersion),
-      withCross("com.twitter" %% "chill" % chillVersion)
+      "com.twitter" %% "algebird-core" % algebirdVersion,
+      "com.twitter" %% "bijection-core" % bijectionVersion,
+      "com.twitter" %% "storehaus-core" % storehausVersion,
+      "com.twitter" %% "chill" % chillVersion,
+      "com.twitter" %% "storehaus-algebra" % storehausVersion,
+      withCross("com.twitter" %% "util-core" % utilVersion)
     )
+  ).dependsOn(
+    summingbirdCore % "test->test;compile->compile",
+    summingbirdBatch
   )
 
   lazy val summingbirdStorm = module("storm").settings(
     parallelExecution in Test := false,
     libraryDependencies ++= Seq(
       "com.twitter" %% "algebird-core" % algebirdVersion,
-      withCross("com.twitter" %% "bijection-core" % bijectionVersion),
-      withCross("com.twitter" %% "chill" % chillVersion),
-      withCross("com.twitter" %% "storehaus-core" % storehausVersion),
-      withCross("com.twitter" %% "storehaus-algebra" % storehausVersion),
-      withCross("com.twitter" %% "tormenta-core" % tormentaVersion),
+      "com.twitter" %% "bijection-core" % bijectionVersion,
+      "com.twitter" %% "chill" % chillVersion,
+      "com.twitter" % "chill-storm" % chillVersion exclude("org.slf4j", "log4j-over-slf4j") exclude("ch.qos.logback", "logback-classic"),
+      "com.twitter" %% "chill-bijection" % chillVersion,
+      "com.twitter" %% "storehaus-core" % storehausVersion,
+      "com.twitter" %% "storehaus-algebra" % storehausVersion,
+      "com.twitter" %% "scalding-args" % scaldingVersion,
+      "com.twitter" %% "tormenta-core" % tormentaVersion exclude("org.slf4j", "log4j-over-slf4j") exclude("ch.qos.logback", "logback-classic"),
       withCross("com.twitter" %% "util-core" % utilVersion),
-      "storm" % "storm" % "0.9.0-wip15"
+      "storm" % "storm" % "0.9.0-wip15" % "provided" exclude("org.slf4j", "log4j-over-slf4j") exclude("ch.qos.logback", "logback-classic")
     )
   ).dependsOn(
     summingbirdCore % "test->test;compile->compile",
-    summingbirdBatch,
-    summingbirdKryo
+    summingbirdOnline,
+    summingbirdChill,
+    summingbirdBatch
   )
 
   lazy val summingbirdScalding = module("scalding").settings(
@@ -187,16 +221,20 @@ object SummingbirdBuild extends Build {
       "com.backtype" % "dfs-datastores" % dfsDatastoresVersion,
       "com.backtype" % "dfs-datastores-cascading" % dfsDatastoresVersion,
       "com.twitter" %% "algebird-core" % algebirdVersion,
-      withCross("com.twitter" %% "bijection-json" % bijectionVersion),
-      withCross("com.twitter" %% "bijection-algebird" % bijectionVersion),
-      withCross("com.twitter" %% "chill" % chillVersion),
+      "com.twitter" %% "algebird-util" % algebirdVersion,
+      "com.twitter" %% "algebird-bijection" % algebirdVersion,
+      "com.twitter" %% "bijection-json" % bijectionVersion,
+      "com.twitter" %% "chill" % chillVersion,
+      "com.twitter" % "chill-hadoop" % chillVersion,
+      "com.twitter" %% "chill-bijection" % chillVersion,
+      "commons-lang" % "commons-lang" % "2.6",
       "com.twitter" %% "scalding-core" % scaldingVersion,
-      withCross("com.twitter" %% "scalding-commons" % "0.2.0")
+      "com.twitter" %% "scalding-commons" % scaldingVersion
     )
   ).dependsOn(
     summingbirdCore % "test->test;compile->compile",
-    summingbirdBatch,
-    summingbirdKryo
+    summingbirdChill,
+    summingbirdBatch
   )
 
   lazy val summingbirdBuilder = module("builder").dependsOn(
@@ -207,9 +245,11 @@ object SummingbirdBuild extends Build {
 
   lazy val summingbirdExample = module("example").settings(
     libraryDependencies ++= Seq(
-      withCross("com.twitter" %% "bijection-netty" % bijectionVersion),
-      withCross("com.twitter" %% "tormenta-twitter" % tormentaVersion),
-      withCross("com.twitter" %% "storehaus-memcache" % storehausVersion)
+      "log4j" % "log4j" % "1.2.16",
+      "org.slf4j" % "slf4j-log4j12" % slf4jVersion,
+      "com.twitter" %% "bijection-netty" % bijectionVersion,
+      "com.twitter" %% "tormenta-twitter" % tormentaVersion exclude("org.slf4j", "log4j-over-slf4j") exclude("ch.qos.logback", "logback-classic"),
+      "com.twitter" %% "storehaus-memcache" % storehausVersion
     )
   ).dependsOn(summingbirdCore, summingbirdStorm)
 }

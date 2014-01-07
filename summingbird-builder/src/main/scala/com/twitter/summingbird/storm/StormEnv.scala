@@ -16,11 +16,9 @@ limitations under the License.
 
 package com.twitter.summingbird.storm
 
-import backtype.storm.Config
 import com.twitter.scalding.Args
-import com.twitter.summingbird.{ Env, Unzip2, Producer }
-import com.twitter.summingbird.kryo.KryoRegistrationHelper
-import com.twitter.summingbird.scalding.Scalding
+import com.twitter.summingbird.{ Env, TailProducer }
+import scala.collection.JavaConverters._
 
 /**
  * Storm-specific extension to Env. StormEnv handles storm-specific configuration
@@ -39,22 +37,16 @@ case class StormEnv(override val jobName: String, override val args: Args)
     // of the environment and defining the builder).
     val ajob = abstractJob
 
-    val codecPairs = Seq(builder.keyCodecPair, builder.valueCodecPair)
-    val eventCodecPairs = builder.eventCodecPairs
-
     val classSuffix =
       args.optional("name")
         .getOrElse(jobName.split("\\.").last)
 
     Storm.remote(builder.opts)
-      .withConfigUpdater { config =>
-      val c = ConfigBijection.invert(config)
-      val transformed = ConfigBijection(ajob.transformConfig(c))
-      KryoRegistrationHelper.registerInjections(transformed, eventCodecPairs)
-      KryoRegistrationHelper.registerInjectionDefaults(transformed, codecPairs)
-      transformed
+      .withRegistrars(ajob.registrars ++ builder.registrar.getRegistrars.asScala)
+      .withConfigUpdater { c =>
+      c.updated(ajob.transformConfig(c.toMap))
     }.run(
-      builder.node.name(builder.id).asInstanceOf[Producer[Storm, _]],
+      builder.node.name(builder.id).asInstanceOf[TailProducer[Storm, _]],
       classSuffix
     )
   }

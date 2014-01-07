@@ -31,8 +31,8 @@ object DependantsTest extends Properties("Dependants") {
   implicit def testStore: Memory#Store[Int, Int] = MMap[Int, Int]()
   implicit def sink1: Memory#Sink[Int] = ((_) => Unit)
   implicit def sink2: Memory#Sink[(Int, Int)] = ((_) => Unit)
-  implicit def arbSource1: Arbitrary[Producer[Memory, Int]] = Arbitrary(Gen.listOfN(5000, Arbitrary.arbitrary[Int]).map(Producer.source[Memory,Int](_)))
-  implicit def arbSource2: Arbitrary[KeyedProducer[Memory, Int, Int]] = Arbitrary(Gen.listOfN(5000, Arbitrary.arbitrary[(Int, Int)]).map(Producer.source[Memory,(Int, Int)](_)))
+  implicit val arbSource1: Arbitrary[Producer[Memory, Int]] = Arbitrary(Gen.listOfN(100, Arbitrary.arbitrary[Int]).map(Producer.source[Memory,Int](_)))
+  implicit val arbSource2: Arbitrary[KeyedProducer[Memory, Int, Int]] = Arbitrary(Gen.listOfN(100, Arbitrary.arbitrary[(Int, Int)]).map(Producer.source[Memory,(Int, Int)](_)))
 
   implicit def genProducer: Arbitrary[Producer[Memory, _]] = Arbitrary(oneOf(genProd1, genProd2, summed))
 
@@ -147,6 +147,43 @@ object DependantsTest extends Properties("Dependants") {
     val dependants = Dependants(prod)
     val sAndDown = (sources ++ sources.flatMap { dependants.transitiveDependantsOf(_) })
     allNodes.toSet == sAndDown
+  }
+
+  property("transitiveDependantsTillOutput finds outputs as a subset of dependants") =
+    forAll { (prod: Producer[Memory, Any]) =>
+      val dependants = Dependants(prod)
+      dependants.nodes.forall { n =>
+        val output = dependants.transitiveDependantsTillOutput(n).collect {
+          case t: TailProducer[_, _] => t
+        }.toSet[Producer[Memory, Any]]
+
+        (dependants.transitiveDependantsOf(n).toSet intersect output) == output
+      }
+    }
+
+  property("transitiveDependantsTillOutput is a subset of writers dependencies") =
+    forAll { (prod: Producer[Memory, Any]) =>
+      val dependants = Dependants(prod)
+      dependants.nodes.forall { n =>
+        val depTillWrite = dependants.transitiveDependantsTillOutput(n)
+        val writerDependencies = depTillWrite.collect {
+          case t: TailProducer[_, _] => t
+        }.flatMap { n => n :: Producer.transitiveDependenciesOf(n) }.toSet
+
+        depTillWrite.collectFirst{ case MergedProducer(_, _) => true}.getOrElse(false) || writerDependencies.isEmpty || ((depTillWrite.toSet intersect writerDependencies) == depTillWrite.toSet)
+      }
+    }
+
+  property("transitiveDependantsTillOutput finds no children of outputs") = forAll { (prod: Producer[Memory, Any]) =>
+    val dependants = Dependants(prod)
+    dependants.nodes.forall { n =>
+      val tillWrite = dependants.transitiveDependantsTillOutput(n)
+      val outputChildren = tillWrite.collect {
+        case s@Summer(_,_,_) => s
+        case w@WrittenProducer(_,_) => w
+      }.flatMap { dependants.transitiveDependantsOf(_) }.toSet[Producer[Memory, Any]]
+      tillWrite.collectFirst{ case MergedProducer(_, _) => true}.getOrElse(false) || (tillWrite.toSet & outputChildren.toSet).size == 0
+    }
   }
 
 }

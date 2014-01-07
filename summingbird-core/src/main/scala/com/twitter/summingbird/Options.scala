@@ -25,8 +25,7 @@ package com.twitter.summingbird
 object Options {
   def apply(opts: Map[Class[_], Any] = Map.empty): Options = new Options(opts)
 }
-
-class Options(opts: Map[Class[_], Any]) {
+class Options(val opts: Map[Class[_], Any]) {
   def set(opt: Any) = Options(opts + (opt.getClass -> opt))
 
   def get[T](klass: Class[T]): Option[T] =
@@ -39,4 +38,6 @@ class Options(opts: Map[Class[_], Any]) {
 
   def get[T: ClassManifest]: Option[T] = get(klass[T])
   def getOrElse[T: ClassManifest](default: T): T = getOrElse(klass[T], default)
+
+  override def toString = "Options(%s)".format(opts.toString)
 }

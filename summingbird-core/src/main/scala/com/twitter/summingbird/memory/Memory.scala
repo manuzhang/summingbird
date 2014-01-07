@@ -56,6 +56,14 @@ class Memory extends Platform[Memory] {
             val (rightS, rightM) = toStream(r, leftM)
             (leftS ++ rightS, rightM)
 
+          case KeyFlatMappedProducer(producer, fn) =>
+            val (s, m) = toStream(producer, jamfs)
+            (s.flatMap{
+              case (k, v) =>
+                fn(k).map((_, v))
+             }
+            , m)
+
           case AlsoProducer(l, r) =>
             //Plan the first one, but ignore it
             val (left, leftM) = toStream(l, jamfs)
@@ -80,18 +88,18 @@ class Memory extends Platform[Memory] {
             val (s, m) = toStream(producer, jamfs)
             val summed = s.map {
               case pair @ (k, deltaV) =>
-                val newV = store.get(k)
-                  .map { monoid.plus(_, deltaV) }
+                val oldV = store.get(k)
+                val newV = oldV.map { monoid.plus(_, deltaV) }
                   .getOrElse(deltaV)
                 store.update(k, newV)
-                pair
+                (k, (oldV, deltaV))
             }
             (summed, m)
         }
         (s.asInstanceOf[Stream[T]], m + (outerProducer -> s))
     }
 
-  def plan[T](prod: Producer[Memory, T]): Stream[T] =
+  def plan[T](prod: TailProducer[Memory, T]): Stream[T] =
     toStream(prod, Map.empty)._1
 
   def run(iter: Stream[_]) {
